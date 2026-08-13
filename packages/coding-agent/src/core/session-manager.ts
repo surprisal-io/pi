@@ -155,6 +155,15 @@ export type SessionEntry =
 /** Raw file entry (includes header) */
 export type FileEntry = SessionHeader | SessionEntry;
 
+/** Canonical in-memory session mutations, emitted synchronously after they are applied. */
+export type SessionManagerMutation =
+	| { type: "entry_appended"; entry: SessionEntry; leafId: string }
+	| { type: "leaf_changed"; leafId: string | null }
+	| { type: "session_reset"; header: SessionHeader; entries: readonly SessionEntry[]; leafId: string | null };
+
+/** Listener for canonical in-memory session mutations. Listeners must not throw or mutate event values. */
+export type SessionManagerMutationListener = (mutation: SessionManagerMutation) => void;
+
 /** Tree node for getTree() - defensive copy of session structure */
 export interface SessionTreeNode {
 	entry: SessionEntry;
@@ -203,6 +212,7 @@ export type ReadonlySessionManager = Pick<
 	| "getEntries"
 	| "getTree"
 	| "getSessionName"
+	| "subscribeMutations"
 >;
 
 function createSessionId(): string {
@@ -864,6 +874,7 @@ export class SessionManager {
 	private labelsById: Map<string, string> = new Map();
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
+	private readonly mutationListeners = new Set<SessionManagerMutationListener>();
 
 	private constructor(
 		cwd: string,
@@ -920,6 +931,7 @@ export class SessionManager {
 
 			this._buildIndex();
 			this.flushed = true;
+			this._emitSessionReset();
 		} else {
 			const explicitPath = this.sessionFile;
 			this.newSession();
@@ -952,6 +964,7 @@ export class SessionManager {
 			const fileTimestamp = timestamp.replace(/[:.]/g, "-");
 			this.sessionFile = join(this.getSessionDir(), `${fileTimestamp}_${this.sessionId}.jsonl`);
 		}
+		this._emitSessionReset();
 		return this.sessionFile;
 	}
 
@@ -1046,6 +1059,33 @@ export class SessionManager {
 		this.byId.set(entry.id, entry);
 		this.leafId = entry.id;
 		this._persist(entry);
+		this._emitMutation({ type: "entry_appended", entry, leafId: entry.id });
+	}
+
+	private _emitMutation(mutation: SessionManagerMutation): void {
+		for (const listener of this.mutationListeners) listener(mutation);
+	}
+
+	private _emitSessionReset(): void {
+		const header = this.getHeader();
+		if (!header) return;
+		this._emitMutation({
+			type: "session_reset",
+			header,
+			entries: this.getEntries(),
+			leafId: this.leafId,
+		});
+	}
+
+	/**
+	 * Subscribe to exact in-memory session mutations.
+	 *
+	 * Listeners run synchronously after a mutation has been applied. They should
+	 * only enqueue work and must not throw or mutate values from the event.
+	 */
+	subscribeMutations(listener: SessionManagerMutationListener): () => void {
+		this.mutationListeners.add(listener);
+		return () => this.mutationListeners.delete(listener);
 	}
 
 	/** Append a message as child of current leaf, then advance leaf. Returns entry id.
@@ -1362,6 +1402,7 @@ export class SessionManager {
 			throw new Error(`Entry ${branchFromId} not found`);
 		}
 		this.leafId = branchFromId;
+		this._emitMutation({ type: "leaf_changed", leafId: branchFromId });
 	}
 
 	/**
@@ -1371,6 +1412,7 @@ export class SessionManager {
 	 */
 	resetLeaf(): void {
 		this.leafId = null;
+		this._emitMutation({ type: "leaf_changed", leafId: null });
 	}
 
 	/**
@@ -1486,6 +1528,7 @@ export class SessionManager {
 			} else {
 				this.flushed = false;
 			}
+			this._emitSessionReset();
 
 			return newSessionFile;
 		}
@@ -1508,6 +1551,7 @@ export class SessionManager {
 		this.fileEntries = [header, ...pathWithoutLabels, ...labelEntries];
 		this.sessionId = newSessionId;
 		this._buildIndex();
+		this._emitSessionReset();
 		return undefined;
 	}
 
