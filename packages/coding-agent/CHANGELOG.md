@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added synchronous `SessionManager` mutation subscriptions for observing exact appended entries, leaf changes, and complete session resets from embedded runtimes.
+
 ### Fixed
 
 - Fixed `--session` and `SessionManager.open()` to reject non-empty invalid session files without overwriting them ([#6002](https://github.com/earendil-works/pi/issues/6002)).
