@@ -1,6 +1,8 @@
 # Session File Format
 
-Sessions are stored as JSONL (JSON Lines) files. Each line is a JSON object with a `type` field. Session entries form a tree structure via `id`/`parentId` fields, enabling in-place branching without creating new files.
+Pi's built-in persisted backend stores sessions as JSONL (JSON Lines) files. Each line is a JSON object with a `type` field. Session entries form a tree structure via `id`/`parentId` fields, enabling in-place branching without creating new files.
+
+Hosts may instead keep the exact `SessionHeader` and `SessionEntry` records in an external store. `SessionManager.fromEntries()` restores those records into an in-memory manager and never creates or reads a session file. The host is responsible for persisting subsequent `SessionManagerMutation` events and the current leaf identity.
 
 ## File Location
 
@@ -392,6 +394,7 @@ Key methods for working with sessions programmatically.
 - `SessionManager.open(path, sessionDir?)` - Open existing session file
 - `SessionManager.continueRecent(cwd, sessionDir?)` - Continue most recent or create new
 - `SessionManager.inMemory(cwd?)` - No file persistence
+- `SessionManager.fromEntries(header, entries, { leafId?, cwd? })` - Restore exact externally stored records in memory without filesystem I/O
 - `SessionManager.forkFrom(sourcePath, targetCwd, sessionDir?)` - Fork session from another project
 
 ### Static Listing Methods

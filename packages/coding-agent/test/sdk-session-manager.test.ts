@@ -6,6 +6,37 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 
+describe("SessionManager external-store restoration", () => {
+	it("restores an exact in-memory tree and emits future mutations without filesystem persistence", () => {
+		const source = SessionManager.inMemory("/source", { id: "01a00000-0000-7000-8000-000000000001" });
+		const first = source.appendMessage({ role: "user", content: "first", timestamp: 1 });
+		source.appendMessage({ role: "user", content: "second", timestamp: 2 });
+		source.appendLabelChange(first, "checkpoint");
+		source.branch(first);
+		const header = source.getHeader();
+		if (header === null) throw new Error("missing source header");
+
+		const restored = SessionManager.fromEntries(header, source.getEntries(), {
+			leafId: source.getLeafId(),
+			cwd: "/restored",
+		});
+		expect(restored.isPersisted()).toBe(false);
+		expect(restored.getSessionFile()).toBeUndefined();
+		expect(restored.getSessionDir()).toBe("");
+		expect(restored.getSessionId()).toBe(header.id);
+		expect(restored.getLeafId()).toBe(first);
+		expect(restored.getEntries()).toEqual(source.getEntries());
+		expect(restored.getLabel(first)).toBe("checkpoint");
+
+		const mutations: unknown[] = [];
+		const unsubscribe = restored.subscribeMutations((mutation) => mutations.push(mutation));
+		const appended = restored.appendMessage({ role: "user", content: "resumed", timestamp: 3 });
+		expect(restored.getEntry(appended)?.parentId).toBe(first);
+		expect(mutations).toHaveLength(1);
+		unsubscribe();
+	});
+});
+
 describe("createAgentSession session manager defaults", () => {
 	let tempDir: string;
 	let cwd: string;

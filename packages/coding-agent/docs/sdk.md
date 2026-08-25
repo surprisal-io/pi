@@ -765,6 +765,16 @@ const { session } = await createAgentSession({
   sessionManager: SessionManager.inMemory(),
 });
 
+// Restore exact records supplied by an external session store. No JSONL is read or created.
+const restoredManager = SessionManager.fromEntries(storedHeader, storedEntries, {
+  leafId: storedLeafId,
+  cwd: process.cwd(),
+});
+const { session: externallyStored } = await createAgentSession({
+  sessionManager: restoredManager,
+});
+// Subscribe to externallyStored.sessionManager mutations and persist them in the host store.
+
 // New persistent session
 const { session: persisted } = await createAgentSession({
   sessionManager: SessionManager.create(process.cwd()),

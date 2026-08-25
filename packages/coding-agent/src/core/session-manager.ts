@@ -1614,6 +1614,35 @@ export class SessionManager {
 	}
 
 	/**
+	 * Restore an exact session tree into memory without creating or reading a file.
+	 * External session stores use this to resume from their own durable records.
+	 */
+	static fromEntries(
+		header: SessionHeader,
+		entries: readonly SessionEntry[],
+		options: { leafId?: string | null; cwd?: string } = {},
+	): SessionManager {
+		if (header.type !== "session") throw new Error("Session header must have type 'session'");
+		assertValidSessionId(header.id);
+		const cwd = options.cwd ?? getSessionHeaderCwd(header) ?? process.cwd();
+		const manager = new SessionManager(cwd, "", undefined, false, { id: header.id });
+		manager.fileEntries = structuredClone([header, ...entries]);
+		// Migration is intentionally in-memory; the external store decides when to persist it.
+		migrateToCurrentVersion(manager.fileEntries);
+		manager.sessionId = header.id;
+		manager._buildIndex();
+		if (options.leafId !== undefined) {
+			if (options.leafId !== null && !manager.byId.has(options.leafId)) {
+				throw new Error(`Session leaf '${options.leafId}' does not exist`);
+			}
+			manager.leafId = options.leafId;
+		}
+		manager.flushed = true;
+		manager._emitSessionReset();
+		return manager;
+	}
+
+	/**
 	 * Fork a session from another project directory into the current project.
 	 * Creates a new session in the target cwd with the full history from the source session.
 	 * @param sourcePath Path to the source session file
