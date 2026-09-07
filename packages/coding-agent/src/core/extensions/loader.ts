@@ -86,6 +86,27 @@ const isTypeScriptSourceRuntime = !isBunBinary && path.extname(fileURLToPath(imp
  */
 let _aliases: Record<string, string> | null = null;
 
+interface PiAiAliasEntries {
+	distDir: string;
+	compatEntry: string;
+	oauthEntry: string;
+	providersEntry: string;
+}
+
+export function buildPiAiAliases(packageName: string, entries: PiAiAliasEntries): Record<string, string> {
+	return {
+		[`${packageName}/providers/all`]: entries.providersEntry,
+		[`${packageName}/providers`]: path.join(entries.distDir, "providers"),
+		[`${packageName}/api`]: path.join(entries.distDir, "api"),
+		[`${packageName}/utils`]: path.join(entries.distDir, "utils"),
+		[`${packageName}/compat`]: entries.compatEntry,
+		[`${packageName}/oauth`]: entries.oauthEntry,
+		[`${packageName}/bedrock-provider`]: path.join(entries.distDir, "bedrock-provider.js"),
+		[`${packageName}/bun-oauth`]: path.join(entries.distDir, "bun-oauth.js"),
+		[packageName]: entries.compatEntry,
+	};
+}
+
 function getAliases(): Record<string, string> {
 	if (_aliases) return _aliases;
 
@@ -117,22 +138,22 @@ function getAliases(): Record<string, string> {
 		"ai/dist/providers/all.js",
 		"@earendil-works/pi-ai/providers/all",
 	);
+	const piAiAliasEntries: PiAiAliasEntries = {
+		distDir: path.dirname(piAiCompatEntry),
+		compatEntry: piAiCompatEntry,
+		oauthEntry: piAiOauthEntry,
+		providersEntry: piAiProvidersEntry,
+	};
 
 	_aliases = {
 		"@earendil-works/pi-coding-agent": piCodingAgentEntry,
 		"@earendil-works/pi-agent-core": piAgentCoreEntry,
 		"@earendil-works/pi-tui": piTuiEntry,
-		"@earendil-works/pi-ai/providers/all": piAiProvidersEntry,
-		"@earendil-works/pi-ai/compat": piAiCompatEntry,
-		"@earendil-works/pi-ai/oauth": piAiOauthEntry,
-		"@earendil-works/pi-ai": piAiCompatEntry,
+		...buildPiAiAliases("@earendil-works/pi-ai", piAiAliasEntries),
 		"@mariozechner/pi-coding-agent": piCodingAgentEntry,
 		"@mariozechner/pi-agent-core": piAgentCoreEntry,
 		"@mariozechner/pi-tui": piTuiEntry,
-		"@mariozechner/pi-ai/providers/all": piAiProvidersEntry,
-		"@mariozechner/pi-ai/compat": piAiCompatEntry,
-		"@mariozechner/pi-ai/oauth": piAiOauthEntry,
-		"@mariozechner/pi-ai": piAiCompatEntry,
+		...buildPiAiAliases("@mariozechner/pi-ai", piAiAliasEntries),
 		typebox: typeboxEntry,
 		"typebox/compile": typeboxCompileEntry,
 		"typebox/value": typeboxValueEntry,
