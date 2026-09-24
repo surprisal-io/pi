@@ -6,6 +6,7 @@ const packageName = process.argv[2];
 const packageDir = new Map([
 	["@earendil-works/pi-ai", "ai"],
 	["@earendil-works/pi-coding-agent", "coding-agent"],
+	["@earendil-works/pi-tui", "tui"],
 ]).get(packageName);
 if (!packageDir) throw new Error(`Unknown package '${packageName}'`);
 
