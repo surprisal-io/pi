@@ -3,12 +3,15 @@ import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 
 const packageName = process.argv[2];
-if (packageName !== "@earendil-works/pi-coding-agent")
-	throw new Error(`Unknown package '${packageName}'`);
+const packageDir = new Map([
+	["@earendil-works/pi-ai", "ai"],
+	["@earendil-works/pi-coding-agent", "coding-agent"],
+]).get(packageName);
+if (!packageDir) throw new Error(`Unknown package '${packageName}'`);
 
 const root = resolve(import.meta.dirname, "..");
 try {
-	await access(resolve(root, "packages/coding-agent/dist/index.js"));
+	await access(resolve(root, `packages/${packageDir}/dist/index.js`));
 	process.exit(0);
 } catch {}
 

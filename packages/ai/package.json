@@ -60,6 +60,7 @@
 		"build": "npm run generate-models && npm run build:offline",
 		"build:offline": "npm run check:model-data && tsgo -p tsconfig.build.json && shx rm -rf dist/providers/data && shx cp -r src/providers/data dist/providers/data",
 		"test": "vitest --run",
+		"prepack": "node ../../scripts/prepare-git-package.mjs @earendil-works/pi-ai",
 		"prepublishOnly": "npm run clean && npm run build"
 	},
 	"dependencies": {
