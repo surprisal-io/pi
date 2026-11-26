@@ -55,7 +55,7 @@
 		"release:minor": "node scripts/release.mjs minor",
 		"release:major": "node scripts/release.mjs major",
 		"release:fix-links": "node scripts/release-notes.mjs fix-github-releases",
-		"prepare": "husky"
+		"prepare": "node scripts/prepare.mjs"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.3.5",
