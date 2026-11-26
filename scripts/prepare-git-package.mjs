@@ -6,8 +6,11 @@ import { hydrateModelCatalogBytes } from "./update-model-catalog-pin.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const packageDir = process.argv[2];
-if (!["ai", "coding-agent", "tui"].includes(packageDir)) throw new Error(`Unknown Git package: ${packageDir}`);
-if (existsSync(join(root, "packages", packageDir, "dist/index.js"))) process.exit(0);
+const hydrateOnly = packageDir === "--hydrate-only";
+if (!hydrateOnly) {
+	if (!["ai", "coding-agent", "tui"].includes(packageDir)) throw new Error(`Unknown Git package: ${packageDir}`);
+	if (existsSync(join(root, "packages", packageDir, "dist/index.js"))) process.exit(0);
+}
 
 function run(command, args) {
 	const result = spawnSync(command, args, { cwd: root, stdio: "inherit" });
@@ -26,5 +29,7 @@ if (`sha256-${createHash("sha256").update(bytes).digest("hex")}` !== revision) {
 	throw new Error(`Model catalog ${revision} does not match its checksum`);
 }
 hydrateModelCatalogBytes(root, bytes);
-run("npm", ["ci", "--include=dev", "--ignore-scripts"]);
-run("npm", ["run", "build:offline"]);
+if (!hydrateOnly) {
+	run("npm", ["ci", "--include=dev", "--ignore-scripts"]);
+	run("npm", ["run", "build:offline"]);
+}

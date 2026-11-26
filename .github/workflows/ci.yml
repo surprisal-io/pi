@@ -29,8 +29,10 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
-      - name: Build
-        run: npm run build
+      - name: Build with the pinned model catalog
+        run: |
+          node scripts/prepare-git-package.mjs --hydrate-only
+          npm run build:offline
 
       # Previews are published for main, release tags and PRs from branches of this repo only (see preview-packages.yml).
       - name: Pack preview packages
@@ -52,11 +54,11 @@ jobs:
       - name: Check
         run: npm run check
 
-      # The checkout has no tags; the released changelog sections are compared with the newest release tag.
-      - name: Fetch the newest release tag
+      # The fork does not mirror release tags; use the upstream tag for the checked-out version.
+      - name: Fetch the matching upstream release tag
         run: |
-          tag=$(git ls-remote --tags --sort=-v:refname origin 'v*.*.*' | grep -v '\^{}' | head -1 | sed 's#.*refs/tags/##')
-          git fetch --depth=1 origin "refs/tags/$tag:refs/tags/$tag"
+          tag=$(node -p '"v" + require("./packages/coding-agent/package.json").version')
+          git fetch --depth=1 https://github.com/earendil-works/pi.git "refs/tags/$tag:refs/tags/$tag"
 
       - name: Check released changelog sections
         run: npm run check:released-changelogs
@@ -94,8 +96,10 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
-      - name: Build
-        run: npm run build
+      - name: Build with the pinned model catalog
+        run: |
+          node scripts/prepare-git-package.mjs --hydrate-only
+          npm run build:offline
 
       - name: Build the pi-env daemon
         if: matrix.name == 'other'
