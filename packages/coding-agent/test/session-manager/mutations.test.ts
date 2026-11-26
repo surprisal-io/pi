@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	CURRENT_SESSION_VERSION,
 	type SessionHeader,
@@ -13,6 +13,7 @@ import {
 const tempDirs: string[] = [];
 
 afterEach(() => {
+	vi.restoreAllMocks();
 	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -126,6 +127,35 @@ describe("SessionManager mutation subscriptions", () => {
 		session.setSessionFile(path);
 
 		expect(mutations).toEqual([{ type: "session_reset", header, entries: [entry], leafId: entry.id }]);
+	});
+
+	it("does not notify observers when persistence fails and the append is rolled back", () => {
+		const session = SessionManager.inMemory();
+		const first = session.appendMessage({ role: "user", content: "first", timestamp: 1 });
+		const listener = vi.fn();
+		session.subscribeMutations(listener);
+		vi.spyOn(session, "_persist").mockImplementationOnce(() => {
+			throw new Error("disk full");
+		});
+
+		expect(() => session.appendMessage({ role: "user", content: "second", timestamp: 2 })).toThrow("disk full");
+		expect(session.getEntries().map((entry) => entry.id)).toEqual([first]);
+		expect(session.getLeafId()).toBe(first);
+		expect(listener).not.toHaveBeenCalled();
+	});
+
+	it("restores an external tree with the requested leaf and no file persistence", () => {
+		const session = SessionManager.inMemory(process.cwd(), { id: "external" });
+		const first = session.appendMessage({ role: "user", content: "first", timestamp: 1 });
+		session.appendMessage({ role: "user", content: "second", timestamp: 2 });
+		const header = session.getHeader();
+		if (!header) throw new Error("Expected a session header");
+		const restored = SessionManager.fromEntries(header, session.getEntries(), { leafId: first });
+
+		expect(restored.getHeader()).toEqual(header);
+		expect(restored.getEntries()).toEqual(session.getEntries());
+		expect(restored.getLeafId()).toBe(first);
+		expect(restored.isPersisted()).toBe(false);
 	});
 
 	it("stops emitting after unsubscribe", () => {
