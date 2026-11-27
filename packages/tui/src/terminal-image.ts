@@ -2,6 +2,8 @@ import { execSync } from "node:child_process";
 import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
+import type { TerminalColorMode } from "./colors.ts";
+import { visibleWidth } from "./utils.ts";
 
 export type ImageProtocol = "kitty" | "iterm2" | null;
 
@@ -32,6 +34,7 @@ export interface ImageRenderOptions {
 }
 
 let cachedCapabilities: TerminalCapabilities | null = null;
+let capabilityOverrides: Partial<TerminalCapabilities> = {};
 
 // Default cell dimensions - updated by TUI when terminal responds to query
 let cellDimensions: CellDimensions = { widthPx: 9, heightPx: 18 };
@@ -65,12 +68,12 @@ function probeTmuxHyperlinks(): boolean {
 	}
 }
 
-export function detectCapabilities(tmuxForwardsHyperlink: () => boolean = probeTmuxHyperlinks): TerminalCapabilities {
+function detectCapabilitiesFromEnvironment(tmuxForwardsHyperlink: () => boolean): TerminalCapabilities {
 	const termProgram = process.env.TERM_PROGRAM?.toLowerCase() || "";
 	const terminalEmulator = process.env.TERMINAL_EMULATOR?.toLowerCase() || "";
 	const term = process.env.TERM?.toLowerCase() || "";
 	const colorTerm = process.env.COLORTERM?.toLowerCase() || "";
-	const hasTrueColorHint = colorTerm === "truecolor" || colorTerm === "24bit";
+	const hasTrueColorHint = colorTerm === "truecolor" || colorTerm === "24bit" || term.endsWith("-direct");
 	const isWindowsConsole = process.platform === "win32";
 
 	// Emit OSC 8 hyperlinks only when tmux confirms it forwards.
@@ -82,6 +85,23 @@ export function detectCapabilities(tmuxForwardsHyperlink: () => boolean = probeT
 	// screen does not forward OSC 8 hyperlinks, so keep them off there.
 	if (term.startsWith("screen")) {
 		return { images: null, trueColor: hasTrueColorHint, hyperlinks: false };
+	}
+
+	// Herdr forwards OSC 8 hyperlinks and supports the Kitty graphics protocol. Check it before
+	// outer-terminal detection because variables like KITTY_WINDOW_ID can leak into its panes.
+	if (termProgram === "herdr") {
+		return { images: "kitty", trueColor: hasTrueColorHint, hyperlinks: true };
+	}
+
+	if (termProgram === "rex") {
+		return { images: "kitty", trueColor: true, hyperlinks: true };
+	}
+
+	// Orca supports Kitty graphics but only advertises it through ORCA_IMAGE_PROTOCOL. Require
+	// both signals so Orca releases predating that advertisement keep the text fallback instead
+	// of reserving image rows that nothing renders.
+	if (termProgram === "orca" && process.env.ORCA_IMAGE_PROTOCOL === "kitty") {
+		return { images: "kitty", trueColor: true, hyperlinks: true };
 	}
 
 	if (process.env.KITTY_WINDOW_ID || termProgram === "kitty") {
@@ -109,11 +129,10 @@ export function detectCapabilities(tmuxForwardsHyperlink: () => boolean = probeT
 		return { images: null, trueColor: true, hyperlinks: true };
 	}
 
-	if (termProgram === "vscode") {
-		return { images: null, trueColor: true, hyperlinks: true };
-	}
-
-	if (termProgram === "alacritty") {
+	// Alacritty does not set TERM_PROGRAM. It sets TERM=alacritty when its terminfo entry is
+	// installed (otherwise xterm-256color) and ALACRITTY_WINDOW_ID on Unix and macOS.
+	const isAlacritty = termProgram === "alacritty" || term.startsWith("alacritty") || process.env.ALACRITTY_WINDOW_ID;
+	if (isAlacritty || termProgram === "vscode" || termProgram === "zed") {
 		return { images: null, trueColor: true, hyperlinks: true };
 	}
 
@@ -135,14 +154,60 @@ export function detectCapabilities(tmuxForwardsHyperlink: () => boolean = probeT
 	return { images: null, trueColor: hasTrueColorHint, hyperlinks: false };
 }
 
+function parseBooleanCapabilityOverride(value: string | undefined): boolean | undefined {
+	return value === "1" ? true : value === "0" ? false : undefined;
+}
+
+export function detectCapabilities(tmuxForwardsHyperlink: () => boolean = probeTmuxHyperlinks): TerminalCapabilities {
+	const hyperlinks = parseBooleanCapabilityOverride(process.env.PI_HYPERLINKS);
+	const detected = detectCapabilitiesFromEnvironment(
+		hyperlinks === undefined ? tmuxForwardsHyperlink : () => hyperlinks,
+	);
+	const imageProtocol = process.env.PI_IMAGE_PROTOCOL?.toLowerCase();
+	const images =
+		imageProtocol === "kitty" || imageProtocol === "iterm2"
+			? imageProtocol
+			: imageProtocol === "none" || imageProtocol === "0"
+				? null
+				: undefined;
+	const trueColor = parseBooleanCapabilityOverride(process.env.PI_TRUE_COLOR);
+	return {
+		...detected,
+		...(images !== undefined ? { images } : {}),
+		...(trueColor !== undefined ? { trueColor } : {}),
+		...(hyperlinks !== undefined ? { hyperlinks } : {}),
+	};
+}
+
 export function getCapabilities(): TerminalCapabilities {
 	if (!cachedCapabilities) {
-		cachedCapabilities = detectCapabilities();
+		const hyperlinks = capabilityOverrides.hyperlinks;
+		cachedCapabilities = {
+			...detectCapabilities(hyperlinks === undefined ? undefined : () => hyperlinks),
+			...capabilityOverrides,
+		};
 	}
 	return cachedCapabilities;
 }
 
+export function getTerminalColorMode(capabilities: TerminalCapabilities = getCapabilities()): TerminalColorMode {
+	return capabilities.trueColor ? "truecolor" : "256color";
+}
+
 export function resetCapabilitiesCache(): void {
+	cachedCapabilities = null;
+}
+
+/** Override selected auto-detected capabilities. */
+export function setCapabilityOverrides(overrides: Partial<TerminalCapabilities>): void {
+	if (
+		capabilityOverrides.images === overrides.images &&
+		capabilityOverrides.trueColor === overrides.trueColor &&
+		capabilityOverrides.hyperlinks === overrides.hyperlinks
+	) {
+		return;
+	}
+	capabilityOverrides = { ...overrides };
 	cachedCapabilities = null;
 }
 
@@ -161,6 +226,55 @@ export function isImageLine(line: string): boolean {
 	}
 	// Slow path: sequence elsewhere (multi-row images have cursor-up prefix)
 	return line.includes(KITTY_PREFIX) || line.includes(ITERM2_PREFIX);
+}
+
+/**
+ * Cells covered by the image placement on an image line. Rows are relative to the line; columns are
+ * absolute, with `endCol` exclusive and `Infinity` when the image width cannot be read.
+ */
+export interface ImageLineExtent {
+	firstRow: number;
+	lastRow: number;
+	startCol: number;
+	endCol: number;
+}
+
+/**
+ * Return the cells an image line draws over. Kitty places the image at the line and extends it
+ * downward; iTerm2 lines move the cursor up before drawing, so the image ends at the line.
+ */
+export function getImageLineExtent(line: string): ImageLineExtent | undefined {
+	const kittyStart = line.indexOf(KITTY_PREFIX);
+	if (kittyStart !== -1) {
+		const controls = /\x1b_G([^;]*);/.exec(line)?.[1] ?? "";
+		const columnValue = /(?:^|,)c=(\d+)(?:,|$)/.exec(controls)?.[1];
+		const columns =
+			columnValue === undefined
+				? getRegisteredKittyImageMetadataFromControls(controls)?.columns
+				: Number.parseInt(columnValue, 10);
+		const startCol = visibleWidth(line.slice(0, kittyStart));
+		const rows = getKittyImagePlacementRows(line) ?? 1;
+		return { firstRow: 0, lastRow: rows - 1, startCol, endCol: startCol + (columns ?? Infinity) };
+	}
+	const iterm2Start = line.indexOf(ITERM2_PREFIX);
+	if (iterm2Start === -1) return undefined;
+	const before = line.slice(0, iterm2Start);
+	const moveUp = /\x1b\[(\d+)A$/.exec(before);
+	// Only a plain cell count is a known width; `auto`, pixel and percent widths depend on the image.
+	const columnValue = /[;=]width=(\d+)[;:]/.exec(line.slice(iterm2Start))?.[1];
+	// visibleWidth counts the cursor-up sequence as text, so measure only what precedes it.
+	const startCol = visibleWidth(moveUp ? before.slice(0, moveUp.index) : before);
+	return {
+		firstRow: moveUp ? -Number.parseInt(moveUp[1]!, 10) : 0,
+		lastRow: 0,
+		startCol,
+		endCol: startCol + (columnValue === undefined ? Infinity : Number.parseInt(columnValue, 10)),
+	};
+}
+
+/** Remove Kitty and iTerm2 image sequences, including iTerm2's cursor-up prefix, keeping the text. */
+export function stripImageSequences(line: string): string {
+	return line.replace(/\x1b_G[^\x1b]*\x1b\\/g, "").replace(/(?:\x1b\[\d+A)?\x1b\]1337;File=[^\x07]*\x07/g, "");
 }
 
 /**
@@ -288,15 +402,20 @@ export interface KittyImagePlacement {
 	transmissionGeneration: number;
 	transmissionBytes: number;
 	estimatedDecodedBytes: number;
+	rows: number;
 	sequence: string;
 	replacementLine: string;
 }
 
 const kittyImageMetadata = new Map<number, RegisteredKittyImageMetadata>();
 let kittyTransmissionGeneration = 0;
+// Tallest registered image. Bounds backward searches for image lines above a
+// viewport: no image line further up than this can reach into it.
+let maxKittyImageRows = 0;
 
 export function registerKittyImageMetadata(metadata: KittyImageMetadata): void {
 	kittyTransmissionGeneration += 1;
+	maxKittyImageRows = Math.max(maxKittyImageRows, metadata.rows);
 	kittyImageMetadata.delete(metadata.imageId);
 	kittyImageMetadata.set(metadata.imageId, { ...metadata, transmissionGeneration: kittyTransmissionGeneration });
 	if (kittyImageMetadata.size > 1000) {
@@ -305,11 +424,30 @@ export function registerKittyImageMetadata(metadata: KittyImageMetadata): void {
 	}
 }
 
-function getRegisteredKittyImageMetadata(line: string): RegisteredKittyImageMetadata | undefined {
-	const controls = /\x1b_G([^;]*);/.exec(line)?.[1];
-	if (!controls) return undefined;
+/** Return the row height of the tallest Kitty image registered so far. */
+export function getMaxKittyImageRows(): number {
+	return maxKittyImageRows;
+}
+
+function getRegisteredKittyImageMetadataFromControls(controls: string): RegisteredKittyImageMetadata | undefined {
 	const imageId = /(?:^|,)i=(\d+)(?:,|$)/.exec(controls)?.[1];
 	return imageId === undefined ? undefined : kittyImageMetadata.get(Number.parseInt(imageId, 10));
+}
+
+function getRegisteredKittyImageMetadata(line: string): RegisteredKittyImageMetadata | undefined {
+	const controls = /\x1b_G([^;]*);/.exec(line)?.[1];
+	return controls === undefined ? undefined : getRegisteredKittyImageMetadataFromControls(controls);
+}
+
+function getExplicitKittyImageRows(controls: string): number | undefined {
+	const value = /(?:^|,)r=(\d+)(?:,|$)/.exec(controls)?.[1];
+	if (value === undefined) return undefined;
+	const rows = Number.parseInt(value, 10);
+	return rows > 0 ? rows : undefined;
+}
+
+function getKittyImageRowsFromControls(controls: string, fallbackRows: number): number {
+	return getExplicitKittyImageRows(controls) ?? fallbackRows;
 }
 
 export function getKittyImageMetadata(line: string): KittyImageMetadata | undefined {
@@ -344,11 +482,21 @@ const KITTY_PLACEMENT_CONTROL_KEYS = new Set([
 	"V",
 ]);
 
+/** Read the number of rows covered by an image placement without scanning its payload. */
+export function getKittyImagePlacementRows(line: string): number | undefined {
+	const controls = /\x1b_G([^;]*);/.exec(line)?.[1];
+	if (controls === undefined) return undefined;
+	const explicitRows = getExplicitKittyImageRows(controls);
+	if (explicitRows !== undefined) return explicitRows;
+	return getRegisteredKittyImageMetadataFromControls(controls)?.rows;
+}
+
 /** Build a placement-only command for an image line emitted by {@link renderImage}. */
 export function getKittyImagePlacement(line: string): KittyImagePlacement | undefined {
 	const match = /\x1b_G([^;]*);/.exec(line);
-	const metadata = getRegisteredKittyImageMetadata(line);
-	if (!match || !metadata) return undefined;
+	if (!match) return undefined;
+	const metadata = getRegisteredKittyImageMetadataFromControls(match[1]);
+	if (!metadata) return undefined;
 
 	let commandStart = match.index;
 	let commandControls = match[1];
@@ -374,6 +522,7 @@ export function getKittyImagePlacement(line: string): KittyImagePlacement | unde
 		transmissionGeneration: metadata.transmissionGeneration,
 		transmissionBytes: transmissionEnd - match.index,
 		estimatedDecodedBytes: metadata.widthPx * metadata.heightPx * 4,
+		rows: getKittyImageRowsFromControls(match[1], metadata.rows),
 		sequence,
 		replacementLine: `${line.slice(0, match.index)}${sequence}${line.slice(transmissionEnd)}`,
 	};
@@ -393,11 +542,21 @@ export function cropKittyImageLine(line: string, hiddenRows: number, visibleRows
 	return `${line.slice(0, match.index)}\x1b_G${controls.join(",")};${line.slice(match.index + match[0].length)}`;
 }
 
+function chooseLessDistortedCellCount(upperCount: number, idealCount: number): number {
+	if (upperCount <= 1) return upperCount;
+
+	const lowerCount = upperCount - 1;
+	const upperDistortion = Math.max(upperCount / idealCount, idealCount / upperCount);
+	const lowerDistortion = Math.max(lowerCount / idealCount, idealCount / lowerCount);
+	return lowerDistortion < upperDistortion ? lowerCount : upperCount;
+}
+
 export function calculateImageCellSize(
 	imageDimensions: ImageDimensions,
 	maxWidthCells: number,
 	maxHeightCells?: number,
 	cellDimensions: CellDimensions = { widthPx: 9, heightPx: 18 },
+	optimizeAspectRatio = false,
 ): ImageCellSize {
 	const maxWidth = Math.max(1, Math.floor(maxWidthCells));
 	const maxHeight = maxHeightCells === undefined ? undefined : Math.max(1, Math.floor(maxHeightCells));
@@ -410,13 +569,26 @@ export function calculateImageCellSize(
 
 	const scaledWidthPx = imageWidth * scale;
 	const scaledHeightPx = imageHeight * scale;
-	const columns = Math.ceil(scaledWidthPx / cellDimensions.widthPx);
-	const rows = Math.ceil(scaledHeightPx / cellDimensions.heightPx);
+	let columns = Math.max(1, Math.min(maxWidth, Math.ceil(scaledWidthPx / cellDimensions.widthPx)));
+	const heightRows = scaledHeightPx / cellDimensions.heightPx;
+	let rows = Math.max(1, Math.ceil(heightRows));
+	if (maxHeight !== undefined) {
+		rows = Math.min(maxHeight, rows);
+	}
 
-	return {
-		columns: Math.max(1, Math.min(maxWidth, columns)),
-		rows: Math.max(1, maxHeight === undefined ? rows : Math.min(maxHeight, rows)),
-	};
+	if (!optimizeAspectRatio) {
+		return { columns, rows };
+	}
+
+	if (widthScale <= heightScale) {
+		const idealRows = (columns * cellDimensions.widthPx * imageHeight) / (imageWidth * cellDimensions.heightPx);
+		rows = chooseLessDistortedCellCount(rows, idealRows);
+	} else {
+		const idealColumns = (rows * cellDimensions.heightPx * imageWidth) / (imageHeight * cellDimensions.widthPx);
+		columns = chooseLessDistortedCellCount(columns, idealColumns);
+	}
+
+	return { columns, rows };
 }
 
 export function calculateImageRows(
@@ -580,7 +752,14 @@ export function renderImage(
 	}
 
 	const maxWidth = options.maxWidthCells ?? 80;
-	const size = calculateImageCellSize(imageDimensions, maxWidth, options.maxHeightCells, getCellDimensions());
+	// Reduce Kitty's cell-aligned distortion without shrinking iTerm2 reservations.
+	const size = calculateImageCellSize(
+		imageDimensions,
+		maxWidth,
+		options.maxHeightCells,
+		getCellDimensions(),
+		caps.images === "kitty",
+	);
 
 	if (caps.images === "kitty") {
 		if (options.imageId !== undefined) {
@@ -613,6 +792,9 @@ export function renderImage(
 	return null;
 }
 
+/** Longest URL that {@link hyperlink} wraps in an OSC 8 sequence. Real links are far shorter. */
+const MAX_HYPERLINK_URL_LENGTH = 8192;
+
 /**
  * Wrap text in an OSC 8 hyperlink sequence.
  * The text is rendered as a clickable hyperlink in terminals that support OSC 8
@@ -620,10 +802,16 @@ export function renderImage(
  * In terminals that do not support OSC 8, the escape sequences are ignored
  * and only the plain text is displayed.
  *
+ * URLs longer than {@link MAX_HYPERLINK_URL_LENGTH} are not linked: wrapping re-opens the link on
+ * every line with the full URL, so a multi-megabyte URL would grow memory quadratically.
+ *
  * @param text - The visible text to display
  * @param url - The URL to link to
  */
 export function hyperlink(text: string, url: string): string {
+	if (url.length > MAX_HYPERLINK_URL_LENGTH) {
+		return text;
+	}
 	return `\x1b]8;;${url}\x1b\\${text}\x1b]8;;\x1b\\`;
 }
 
